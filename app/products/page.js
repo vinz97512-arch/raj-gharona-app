@@ -10,7 +10,12 @@ export default function ProductsPage() {
   const [cart, setCart] = useState([]);
   const [isOrdering, setIsOrdering] = useState(false);
 
-  // ⚠️ CHANGE THIS TO YOUR RAJ GHARONA WHATSAPP NUMBER (Start with 91)
+  // NEW: Checkout Options State
+  const [deliveryMode, setDeliveryMode] = useState("Self-Pickup");
+  const [needsLoading, setNeedsLoading] = useState(false);
+  const [paymentMode, setPaymentMode] = useState("Credit");
+
+  // ⚠️ CHANGE THIS TO YOUR RAJ GHARONA WHATSAPP NUMBER
   const ADMIN_WHATSAPP_NUMBER = "917683975998"; 
 
   useEffect(() => {
@@ -41,20 +46,30 @@ export default function ProductsPage() {
     setCart([...cart, { product_id: product.id, name: product.name, price: price, quantity: 1 }]);
   };
 
-  const cartTotal = cart.reduce((total, item) => total + (item.price * item.quantity), 0);
+  // NEW: Advanced Total Calculations
+  const subtotal = cart.reduce((total, item) => total + (item.price * item.quantity), 0);
+  const freightCost = deliveryMode === "Delivery" ? 150 : 0; // Flat ₹150 for delivery
+  const loadingCost = needsLoading ? 50 : 0; // Flat ₹50 for loading labor
+  const finalTotal = subtotal + freightCost + loadingCost;
+  
   const availableCredit = userProfile ? (userProfile.credit_limit - userProfile.credit_used) : 0;
+  const pointsToEarn = Math.floor(subtotal / 100); // Earn points on products, not shipping!
 
   const placeOrder = async () => {
     if (cart.length === 0) return alert("Your cart is empty!");
-    if (cartTotal > availableCredit) return alert("Order blocked! Exceeds credit limit.");
+    
+    // Security Guard: Only block if they are trying to pay on Credit and are over the limit!
+    if (paymentMode === "Credit" && finalTotal > availableCredit) {
+      return alert("Order blocked! Exceeds your available credit limit.");
+    }
 
     setIsOrdering(true);
     const { data: { user } } = await supabase.auth.getUser();
 
-    // 1. Save to Database
+    // 1. Save Order
     const { data: orderData, error: orderError } = await supabase
       .from('orders')
-      .insert([{ user_id: user.id, total_amount: cartTotal, status: 'Pending' }])
+      .insert([{ user_id: user.id, total_amount: finalTotal, status: 'Pending' }])
       .select().single();
 
     if (orderError) {
@@ -70,32 +85,47 @@ export default function ProductsPage() {
       price: item.price
     }));
     await supabase.from('order_items').insert(orderItems);
-    await supabase.from('profiles').update({ credit_used: userProfile.credit_used + cartTotal }).eq('id', userProfile.id);
+    
+    // 2. Update Ledger (ONLY deduct credit if they chose 'Credit')
+    let newCreditUsed = userProfile.credit_used;
+    if (paymentMode === "Credit") {
+      newCreditUsed += finalTotal;
+    }
 
-    // 2. THE WHATSAPP MAGIC
-    // We format a nice message for the customer to send you
+    await supabase.from('profiles').update({ 
+      credit_used: newCreditUsed,
+      reward_points: userProfile.reward_points + pointsToEarn 
+    }).eq('id', userProfile.id);
+
+    // 3. Send Advanced WhatsApp Receipt
     let message = `*New Order Alert!* 🚀\n\n`;
     message += `*Business:* ${userProfile.business_name}\n`;
-    message += `*Order ID:* #${orderData.id.slice(0, 8)}\n\n`;
-    message += `*Items:*\n`;
+    message += `*Order ID:* #${orderData.id.slice(0, 8)}\n`;
+    message += `*Payment Mode:* ${paymentMode}\n`;
+    message += `*Delivery:* ${deliveryMode}\n`;
+    message += `*Loading Assistance:* ${needsLoading ? 'Yes (+₹50)' : 'No'}\n\n`;
     
+    message += `*Items:*\n`;
     cart.forEach(item => {
       message += `- ${item.quantity}x ${item.name} (₹${item.price})\n`;
     });
     
-    message += `\n*Total Bill:* ₹${cartTotal}\n`;
+    message += `\n*Subtotal:* ₹${subtotal}\n`;
+    if (freightCost > 0) message += `*Freight:* ₹${freightCost}\n`;
+    if (loadingCost > 0) message += `*Loading:* ₹${loadingCost}\n`;
+    message += `*Grand Total:* ₹${finalTotal}\n`;
+    message += `*Reward Points Earned:* ${pointsToEarn} 🪙\n\n`;
     message += `Please process this order ASAP!`;
 
-    // Encode the text so the internet browser can read it
     const encodedMessage = encodeURIComponent(message);
     const whatsappUrl = `https://wa.me/${ADMIN_WHATSAPP_NUMBER}?text=${encodedMessage}`;
 
-    alert(`Success! Order placed safely. Opening WhatsApp...`);
-    
-    // Open WhatsApp in a new tab!
+    alert(`Success! Order placed via ${paymentMode}. Opening WhatsApp...`);
     window.open(whatsappUrl, '_blank');
 
     setCart([]); 
+    setDeliveryMode("Self-Pickup");
+    setNeedsLoading(false);
     checkUserAndFetchData();
     setIsOrdering(false);
   };
@@ -115,11 +145,17 @@ export default function ProductsPage() {
                 <span className="bg-green-100 text-green-800 text-xs px-3 py-1 rounded-full font-bold border border-green-300">
                   {userProfile.pricing_tier} Partner
                 </span>
-                <div className="bg-white px-3 py-2 rounded shadow-sm border text-sm">
-                  <p className="text-gray-500 mb-1">Available Credit</p>
-                  <p className={`text-xl font-bold ${availableCredit < 5000 ? 'text-red-600' : 'text-blue-700'}`}>
-                    ₹{availableCredit}
-                  </p>
+                <div className="flex gap-4">
+                  <div className="bg-white px-3 py-2 rounded shadow-sm border text-sm">
+                    <p className="text-gray-500 mb-1">Reward Balance</p>
+                    <p className="text-xl font-bold text-yellow-600">{userProfile.reward_points} 🪙</p>
+                  </div>
+                  <div className="bg-white px-3 py-2 rounded shadow-sm border text-sm">
+                    <p className="text-gray-500 mb-1">Available Credit</p>
+                    <p className={`text-xl font-bold ${availableCredit < 5000 ? 'text-red-600' : 'text-blue-700'}`}>
+                      ₹{availableCredit}
+                    </p>
+                  </div>
                 </div>
               </div>
             )}
@@ -133,7 +169,6 @@ export default function ProductsPage() {
                 <div key={product.id} className="bg-white rounded-lg shadow-md p-6 border-t-4 border-blue-600">
                   <h2 className="text-xl font-bold text-gray-800">{product.name}</h2>
                   <p className="text-gray-500 mb-4">{product.unit}</p>
-                  
                   <div className="bg-blue-50 p-4 rounded-md flex justify-between items-center">
                     <div>
                       <p className="text-sm text-gray-500">Your Price</p>
@@ -149,7 +184,7 @@ export default function ProductsPage() {
           )}
         </div>
 
-        {/* RIGHT SIDE: CART */}
+        {/* RIGHT SIDE: ADVANCED CART */}
         <div className="md:w-1/4">
           <div className="bg-white rounded-lg shadow-md p-6 sticky top-8">
             <h2 className="text-2xl font-bold border-b pb-2 mb-4 text-gray-800">Your Cart</h2>
@@ -158,6 +193,7 @@ export default function ProductsPage() {
               <p className="text-gray-500">Cart is empty.</p>
             ) : (
               <div className="flex flex-col gap-3">
+                {/* ITEMS */}
                 {cart.map((item, index) => (
                   <div key={index} className="flex justify-between text-sm border-b pb-2">
                     <span className="font-semibold">{item.name}</span>
@@ -165,12 +201,62 @@ export default function ProductsPage() {
                   </div>
                 ))}
                 
-                <div className="flex justify-between text-lg font-bold mt-4 pt-2 border-t-2 text-gray-800">
-                  <span>Total:</span>
-                  <span className={cartTotal > availableCredit ? 'text-red-600' : 'text-blue-700'}>₹{cartTotal}</span>
+                {/* CHECKOUT OPTIONS */}
+                <div className="bg-gray-50 p-3 rounded mt-2 border border-gray-200">
+                  <p className="font-bold text-sm mb-2 text-gray-700">Shipping & Services</p>
+                  
+                  <select 
+                    value={deliveryMode} 
+                    onChange={(e) => setDeliveryMode(e.target.value)}
+                    className="w-full text-sm p-2 mb-2 border rounded"
+                  >
+                    <option value="Self-Pickup">Self-Pickup (Free)</option>
+                    <option value="Delivery">Delivery (+₹150 Freight)</option>
+                  </select>
+
+                  <label className="flex items-center text-sm gap-2 cursor-pointer">
+                    <input 
+                      type="checkbox" 
+                      checked={needsLoading} 
+                      onChange={(e) => setNeedsLoading(e.target.checked)}
+                      className="w-4 h-4"
+                    />
+                    Add Loading Labor (+₹50)
+                  </label>
                 </div>
 
-                {cartTotal > availableCredit && (
+                <div className="bg-blue-50 p-3 rounded border border-blue-200">
+                  <p className="font-bold text-sm mb-2 text-blue-800">Payment Mode</p>
+                  <select 
+                    value={paymentMode} 
+                    onChange={(e) => setPaymentMode(e.target.value)}
+                    className="w-full text-sm p-2 border rounded"
+                  >
+                    <option value="Credit">Pay on Credit</option>
+                    <option value="COD">Cash on Delivery (COD)</option>
+                  </select>
+                </div>
+
+                {/* TOTALS */}
+                <div className="flex justify-between text-sm mt-2 text-gray-600">
+                  <span>Subtotal:</span>
+                  <span>₹{subtotal}</span>
+                </div>
+                
+                <div className="flex justify-between text-lg font-extrabold mt-2 pt-2 border-t-2 text-gray-800">
+                  <span>Grand Total:</span>
+                  <span className={(paymentMode === "Credit" && finalTotal > availableCredit) ? 'text-red-600' : 'text-blue-700'}>
+                    ₹{finalTotal}
+                  </span>
+                </div>
+
+                {pointsToEarn > 0 && (
+                  <p className="text-sm text-yellow-600 font-bold bg-yellow-50 p-2 rounded text-center mt-2 border border-yellow-200">
+                    ✨ Earn {pointsToEarn} points!
+                  </p>
+                )}
+
+                {(paymentMode === "Credit" && finalTotal > availableCredit) && (
                   <p className="text-xs text-red-600 font-bold bg-red-50 p-2 rounded text-center mt-2">
                     Cart exceeds available credit!
                   </p>
@@ -178,10 +264,10 @@ export default function ProductsPage() {
 
                 <button 
                   onClick={placeOrder}
-                  disabled={isOrdering || cartTotal > availableCredit}
-                  className={`w-full mt-4 font-bold py-3 rounded transition ${cartTotal > availableCredit ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-green-600 text-white hover:bg-green-700'}`}
+                  disabled={isOrdering || (paymentMode === "Credit" && finalTotal > availableCredit)}
+                  className={`w-full mt-4 font-bold py-3 rounded transition ${(paymentMode === "Credit" && finalTotal > availableCredit) ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-green-600 text-white hover:bg-green-700'}`}
                 >
-                  {isOrdering ? "Placing Order..." : "Place Order & Send WhatsApp"}
+                  {isOrdering ? "Placing Order..." : `Place Order via ${paymentMode}`}
                 </button>
               </div>
             )}
@@ -190,14 +276,8 @@ export default function ProductsPage() {
 
       </div>
 
-      {/* FLOATING WHATSAPP CHAT BUTTON */}
-      <a 
-        href={`https://wa.me/${ADMIN_WHATSAPP_NUMBER}?text=Hi%20Raj%20Gharona%20Support,%20I%20have%20a%20question.`} 
-        target="_blank" 
-        rel="noopener noreferrer" 
-        className="fixed bottom-8 right-8 bg-green-500 text-white p-4 rounded-full shadow-lg font-bold hover:bg-green-600 transition flex items-center gap-2 z-50"
-      >
-        <span className="text-2xl">💬</span> Chat with Support
+      <a href={`https://wa.me/${ADMIN_WHATSAPP_NUMBER}?text=Hi%20Raj%20Gharona%20Support,%20I%20have%20a%20question.`} target="_blank" rel="noopener noreferrer" className="fixed bottom-8 right-8 bg-green-500 text-white p-4 rounded-full shadow-lg font-bold hover:bg-green-600 transition flex items-center gap-2 z-50">
+        <span className="text-2xl">💬</span> Chat
       </a>
 
     </div>
